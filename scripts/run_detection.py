@@ -13,6 +13,7 @@ import os
 import pickle
 from typing import Any, Dict, List, Optional
 
+import cv2
 import numpy as np
 from nuscenes.eval.detection.utils import category_to_detection_name
 from nuscenes.nuscenes import NuScenes
@@ -48,6 +49,21 @@ CLASS_ALIASES = {
     "people": "pedestrian",
 }
 
+EDGE_IDS = [
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 0),
+    (4, 5),
+    (5, 6),
+    (6, 7),
+    (7, 4),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+]
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -65,6 +81,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--checkpoint-dir", default="./checkpoints")
     parser.add_argument("--out-dir", default="./outputs/detections")
+    parser.add_argument(
+        "--stream-dir",
+        default="./outputs/fcos_stream",
+        help="Directory to save per-camera FCOS overlay images for visualization streaming.",
+    )
+    parser.add_argument(
+        "--no-save-fcos-stream",
+        action="store_true",
+        help="Disable saving per-camera FCOS overlay images.",
+    )
     parser.add_argument("--score-thresh", type=float, default=0.1)
     parser.add_argument(
         "--keep-classes",
@@ -391,6 +417,142 @@ def camera_detections_to_ego(
     return converted
 
 
+def conf_to_blue(conf: float) -> tuple:
+    conf = float(np.clip(conf, 0.0, 1.0))
+    fade = int(round(190 - 160 * conf))
+    fade = int(np.clip(fade, 20, 190))
+    return (255, fade, fade)  # BGR
+
+
+def stream_overlay_image_path(
+    stream_dir: str, scene_idx: int, sample_token: str, cam_name: str
+) -> str:
+    return os.path.join(
+        stream_dir,
+        f"scene_{scene_idx:04d}",
+        sample_token,
+        f"{cam_name}.jpg",
+    )
+
+
+def project_camera_points(points_cam: np.ndarray, cam_intrinsic: np.ndarray) -> tuple:
+    uvw = points_cam @ cam_intrinsic.T
+    uv = uvw[:, :2] / np.maximum(uvw[:, 2:3], 1e-6)
+    z = points_cam[:, 2]
+    return uv, z
+
+
+def draw_projected_camera_box(
+    image: np.ndarray,
+    corners_cam: np.ndarray,
+    cam_intrinsic: np.ndarray,
+    color: tuple,
+    label: Optional[str] = None,
+) -> bool:
+    corners_cam = np.asarray(corners_cam, dtype=np.float32)
+    if corners_cam.shape != (8, 3):
+        return False
+
+    uv, z = project_camera_points(corners_cam, cam_intrinsic)
+    if float(np.min(z)) <= 0.1:
+        return False
+
+    pts = uv.astype(np.int32)
+    h, w = image.shape[:2]
+    if np.all((pts[:, 0] < 0) | (pts[:, 0] >= w) | (pts[:, 1] < 0) | (pts[:, 1] >= h)):
+        return False
+
+    for i0, i1 in EDGE_IDS:
+        p0 = (int(pts[i0, 0]), int(pts[i0, 1]))
+        p1 = (int(pts[i1, 0]), int(pts[i1, 1]))
+        cv2.line(image, p0, p1, color, 2)
+
+    if label:
+        anchor = (int(pts[0, 0]), int(pts[0, 1]))
+        cv2.putText(
+            image,
+            label,
+            (anchor[0] + 3, anchor[1] - 3),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+
+    return True
+
+
+def save_fcos_stream_image(
+    image_path: str,
+    out_path: str,
+    cam_name: str,
+    camera_intrinsic: List[List[float]],
+    dets: Dict[str, np.ndarray],
+    class_names: List[str],
+    score_thresh: float,
+    keep_classes: Optional[set],
+) -> None:
+    image = cv2.imread(image_path)
+    if image is None:
+        return
+
+    boxes = dets.get("boxes", np.array([]))
+    if isinstance(boxes, np.ndarray) and boxes.ndim == 1 and boxes.size > 0:
+        boxes = boxes.reshape(1, -1)
+
+    num_boxes = int(boxes.shape[0]) if isinstance(boxes, np.ndarray) and boxes.ndim == 2 else 0
+    scores = dets.get("scores", np.zeros((num_boxes,), dtype=np.float32))
+    labels = dets.get("labels", np.zeros((num_boxes,), dtype=np.int64))
+    corners = dets.get("corners")
+    cam_intrinsic = np.asarray(camera_intrinsic, dtype=np.float32)
+
+    drawn = 0
+    for idx in range(num_boxes):
+        score = float(scores[idx]) if idx < len(scores) else 0.0
+        if score <= score_thresh:
+            continue
+
+        label_idx = int(labels[idx]) if idx < len(labels) else -1
+        cls_name = (
+            class_names[label_idx]
+            if 0 <= label_idx < len(class_names)
+            else f"class_{label_idx}"
+        )
+        cls_key = str(cls_name).lower()
+        if keep_classes is not None and cls_key not in keep_classes:
+            continue
+
+        if corners is None or idx >= len(corners):
+            continue
+
+        box_corners = np.asarray(corners[idx], dtype=np.float32)
+        ok = draw_projected_camera_box(
+            image=image,
+            corners_cam=box_corners,
+            cam_intrinsic=cam_intrinsic,
+            color=conf_to_blue(score),
+            label=f"{cls_name}:{score:.2f}",
+        )
+        if ok:
+            drawn += 1
+
+    cv2.rectangle(image, (8, 8), (640, 46), (20, 20, 20), -1)
+    cv2.putText(
+        image,
+        f"{cam_name} FCOS3D  boxes={drawn}",
+        (16, 33),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (235, 235, 235),
+        2,
+        cv2.LINE_AA,
+    )
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    cv2.imwrite(out_path, image)
+
+
 def bbox_bev_polygon(bbox_3d: List[float]) -> Polygon:
     x, y, _, w, _, l, yaw = bbox_3d
 
@@ -645,6 +807,11 @@ def main() -> None:
     if use_fallback:
         print("[INFO] Using GT-based simulated detections fallback mode.")
 
+    save_fcos_stream = (not args.no_save_fcos_stream) and (not use_fallback)
+    if save_fcos_stream:
+        os.makedirs(args.stream_dir, exist_ok=True)
+        print(f"[INFO] Saving FCOS camera overlays to: {args.stream_dir}")
+
     rng = np.random.default_rng(args.seed)
 
     scene_start = max(args.scene_start, 0)
@@ -716,6 +883,24 @@ def main() -> None:
                             f"camera {cam_name}: {exc}"
                         )
                         continue
+
+                    if save_fcos_stream:
+                        stream_img_path = stream_overlay_image_path(
+                            stream_dir=args.stream_dir,
+                            scene_idx=scene_idx,
+                            sample_token=sample_token,
+                            cam_name=cam_name,
+                        )
+                        save_fcos_stream_image(
+                            image_path=image_path,
+                            out_path=stream_img_path,
+                            cam_name=cam_name,
+                            camera_intrinsic=calibrated_sensor["camera_intrinsic"],
+                            dets=dets_raw,
+                            class_names=detector_bundle["class_names"],
+                            score_thresh=args.score_thresh,
+                            keep_classes=keep_classes,
+                        )
 
                     merged.extend(
                         camera_detections_to_ego(

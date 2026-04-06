@@ -100,6 +100,17 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--with-overlay", action="store_true", help="Show camera-image overlay panel")
     parser.add_argument(
+        "--overlay-source",
+        choices=["stream", "project"],
+        default="stream",
+        help="Overlay source: stream=pre-saved FCOS images, project=project ego boxes on-the-fly",
+    )
+    parser.add_argument(
+        "--overlay-stream-dir",
+        default="./outputs/fcos_stream",
+        help="Directory containing pre-saved FCOS camera overlay images.",
+    )
+    parser.add_argument(
         "--overlay-mode",
         choices=["all", "single"],
         default="all",
@@ -350,6 +361,69 @@ def draw_bev_legend(
     )
 
 
+def stream_overlay_image_path(
+    overlay_stream_dir: str, scene_idx: int, sample_token: str, cam_channel: str
+) -> str:
+    return os.path.join(
+        overlay_stream_dir,
+        f"scene_{scene_idx:04d}",
+        sample_token,
+        f"{cam_channel}.jpg",
+    )
+
+
+def load_stream_camera_image(
+    overlay_stream_dir: str,
+    scene_idx: int,
+    sample_token: str,
+    cam_channel: str,
+) -> np.ndarray:
+    img_path = stream_overlay_image_path(
+        overlay_stream_dir=overlay_stream_dir,
+        scene_idx=scene_idx,
+        sample_token=sample_token,
+        cam_channel=cam_channel,
+    )
+    image = cv2.imread(img_path)
+    if image is None:
+        blank = np.zeros((720, 1280, 3), dtype=np.uint8)
+        blank[:] = (22, 22, 22)
+        cv2.putText(
+            blank,
+            f"Missing stream image: {cam_channel}",
+            (24, 46),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (235, 235, 235),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            blank,
+            img_path[-120:],
+            (24, 84),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (190, 190, 190),
+            1,
+            cv2.LINE_AA,
+        )
+        image = blank
+
+    cv2.rectangle(image, (8, 8), (430, 46), (20, 20, 20), -1)
+    cv2.putText(
+        image,
+        f"{cam_channel} ({CAMERA_SHORT_LABEL.get(cam_channel, cam_channel)})",
+        (16, 33),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (235, 235, 235),
+        2,
+        cv2.LINE_AA,
+    )
+    return image
+
+
 def project_ego_points_to_image(
     points_ego: np.ndarray,
     cam_translation: np.ndarray,
@@ -518,7 +592,10 @@ def render_camera_overlay(
 def render_overlay_panel(
     nusc: Optional[NuScenes],
     dataroot: str,
+    scene_idx: int,
     sample_token: str,
+    overlay_source: str,
+    overlay_stream_dir: str,
     overlay_mode: str,
     overlay_camera: str,
     detections: List[dict],
@@ -528,19 +605,28 @@ def render_overlay_panel(
     show_gt: bool,
     keep_classes: Optional[set],
 ) -> np.ndarray:
-    if overlay_mode == "single":
-        return render_camera_overlay(
-            nusc=nusc,
-            dataroot=dataroot,
-            sample_token=sample_token,
-            cam_channel=overlay_camera,
-            detections=detections,
-            gt_list=gt_list,
-            conf_thresh=conf_thresh,
-            overlay_max_boxes=overlay_max_boxes,
-            show_gt=show_gt,
-            keep_classes=keep_classes,
-        )
+    if overlay_source == "stream":
+        if overlay_mode == "single":
+            return load_stream_camera_image(
+                overlay_stream_dir=overlay_stream_dir,
+                scene_idx=scene_idx,
+                sample_token=sample_token,
+                cam_channel=overlay_camera,
+            )
+    else:
+        if overlay_mode == "single":
+            return render_camera_overlay(
+                nusc=nusc,
+                dataroot=dataroot,
+                sample_token=sample_token,
+                cam_channel=overlay_camera,
+                detections=detections,
+                gt_list=gt_list,
+                conf_thresh=conf_thresh,
+                overlay_max_boxes=overlay_max_boxes,
+                show_gt=show_gt,
+                keep_classes=keep_classes,
+            )
 
     tile_w = 480
     tile_h = 270
@@ -552,9 +638,13 @@ def render_overlay_panel(
     canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
     canvas[:] = (18, 18, 18)
 
+    if overlay_source == "stream":
+        title = "Surround Cameras (Saved FCOS Stream)"
+    else:
+        title = "Surround Cameras (Projected from ego boxes)"
     cv2.putText(
         canvas,
-        "Surround Cameras (Top: FL/F/FR, Bottom: BL/B/BR)",
+        title,
         (12, 34),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.7,
@@ -565,18 +655,27 @@ def render_overlay_panel(
 
     for r, row in enumerate(CAMERA_GRID):
         for c, cam in enumerate(row):
-            cam_img = render_camera_overlay(
-                nusc=nusc,
-                dataroot=dataroot,
-                sample_token=sample_token,
-                cam_channel=cam,
-                detections=detections,
-                gt_list=gt_list,
-                conf_thresh=conf_thresh,
-                overlay_max_boxes=overlay_max_boxes,
-                show_gt=show_gt,
-                keep_classes=keep_classes,
-            )
+            if overlay_source == "stream":
+                cam_img = load_stream_camera_image(
+                    overlay_stream_dir=overlay_stream_dir,
+                    scene_idx=scene_idx,
+                    sample_token=sample_token,
+                    cam_channel=cam,
+                )
+            else:
+                cam_img = render_camera_overlay(
+                    nusc=nusc,
+                    dataroot=dataroot,
+                    sample_token=sample_token,
+                    cam_channel=cam,
+                    detections=detections,
+                    gt_list=gt_list,
+                    conf_thresh=conf_thresh,
+                    overlay_max_boxes=overlay_max_boxes,
+                    show_gt=show_gt,
+                    keep_classes=keep_classes,
+                )
+
             tile = cv2.resize(cam_img, (tile_w, tile_h), interpolation=cv2.INTER_AREA)
             x0 = gap + c * (tile_w + gap)
             y0 = title_h + gap + r * (tile_h + gap)
@@ -709,13 +808,20 @@ def main() -> None:
     overlay_enabled = bool(args.with_overlay)
 
     if overlay_enabled:
-        if NuScenes is None or Quaternion is None:
-            print("[WARN] nuscenes-devkit/pyquaternion import failed. Overlay disabled.")
-            overlay_enabled = False
+        if args.overlay_source == "project":
+            if NuScenes is None or Quaternion is None:
+                print("[WARN] nuscenes-devkit/pyquaternion import failed. Overlay disabled.")
+                overlay_enabled = False
+            else:
+                nusc = NuScenes(version=args.version, dataroot=args.dataroot, verbose=False)
+                if 0 <= args.scene < len(nusc.scene):
+                    scene_name = nusc.scene[args.scene]["name"]
         else:
-            nusc = NuScenes(version=args.version, dataroot=args.dataroot, verbose=False)
-            if 0 <= args.scene < len(nusc.scene):
-                scene_name = nusc.scene[args.scene]["name"]
+            if not os.path.isdir(args.overlay_stream_dir):
+                print(
+                    f"[WARN] overlay stream dir not found: {args.overlay_stream_dir}. "
+                    "Overlay panel may show missing-image placeholders."
+                )
 
     if args.overlay_mode not in {"all", "single"}:
         raise ValueError("overlay-mode must be one of: all, single")
@@ -726,9 +832,15 @@ def main() -> None:
     overlay_desc = "끄기"
     if overlay_enabled:
         if args.overlay_mode == "all":
-            overlay_desc = "서라운드 6카메라"
+            if args.overlay_source == "stream":
+                overlay_desc = "서라운드 6카메라(저장 스트림)"
+            else:
+                overlay_desc = "서라운드 6카메라(실시간 투영)"
         else:
-            overlay_desc = f"단일 카메라({args.overlay_camera})"
+            if args.overlay_source == "stream":
+                overlay_desc = f"단일 카메라({args.overlay_camera}, 저장 스트림)"
+            else:
+                overlay_desc = f"단일 카메라({args.overlay_camera}, 실시간 투영)"
 
     # WINDOW_NORMAL lets you resize the viewer by dragging window borders.
     cv2.namedWindow(args.window_name, cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL)
@@ -762,7 +874,10 @@ def main() -> None:
             overlay = render_overlay_panel(
                 nusc=nusc,
                 dataroot=args.dataroot,
+                scene_idx=args.scene,
                 sample_token=token,
+                overlay_source=args.overlay_source,
+                overlay_stream_dir=args.overlay_stream_dir,
                 overlay_mode=args.overlay_mode,
                 overlay_camera=args.overlay_camera,
                 detections=det_data.get(token, []),
