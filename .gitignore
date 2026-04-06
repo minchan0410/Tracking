@@ -1,0 +1,28 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# Project-generated / large assets
+data/nuscenes/
+checkpoints/*.pth
+outputs/
+_tmp_mmcv/
+_tmp_mmcv_repo/
