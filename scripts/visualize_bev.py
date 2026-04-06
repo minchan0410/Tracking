@@ -384,7 +384,7 @@ def load_stream_camera_image(
         sample_token=sample_token,
         cam_channel=cam_channel,
     )
-    image = cv2.imread(img_path)
+    image = cv2.imread(img_path) if os.path.isfile(img_path) else None
     if image is None:
         blank = np.zeros((720, 1280, 3), dtype=np.uint8)
         blank[:] = (22, 22, 22)

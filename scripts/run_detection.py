@@ -353,6 +353,11 @@ def camera_detections_to_ego(
     score_thresh: float,
     camera_name: str,
 ) -> List[Dict[str, Any]]:
+    # FCOS3D (CameraInstance3DBoxes) uses camera box size order:
+    # (x_size, y_size, z_size) with yaw around camera y-axis.
+    # In practice for nuScenes mono3d, x_size behaves as vehicle length and
+    # z_size behaves as width after ego conversion, so we map as:
+    # length <- dims[0], width <- dims[2], height <- dims[1].
     rotation = Quaternion(calibrated_sensor["rotation"]).rotation_matrix
     translation = np.asarray(calibrated_sensor["translation"], dtype=np.float32)
 
@@ -378,24 +383,33 @@ def camera_detections_to_ego(
 
         center_sensor = box[:3].astype(np.float32)
         dims = np.abs(box[3:6].astype(np.float32))
-
-        center_ego = rotation @ center_sensor + translation
+        length = float(dims[0])
+        height = float(dims[1])
+        width = float(dims[2])
 
         if corners is not None and idx < len(corners):
             corners_sensor = np.asarray(corners[idx], dtype=np.float32)
             corners_ego = (rotation @ corners_sensor.T).T + translation
+            center_ego = corners_ego.mean(axis=0)
             yaw_ego = principal_axis_yaw(corners_ego[:, :2])
         else:
+            # Camera boxes are commonly encoded with bottom-center origin.
+            # Shift to geometric center before converting to ego for consistent
+            # box reconstruction in BEV and projection.
+            center_sensor_geom = center_sensor + np.array(
+                [0.0, -0.5 * height, 0.0], dtype=np.float32
+            )
+            center_ego = rotation @ center_sensor_geom + translation
+
             yaw_sensor = float(box[6])
+            # Camera yaw is around y-axis (down). Heading in camera x-z plane:
+            # yaw=0 -> +x, yaw=-pi/2 -> +z.
             heading_sensor = np.array(
-                [math.cos(yaw_sensor), math.sin(yaw_sensor), 0.0], dtype=np.float32
+                [math.cos(yaw_sensor), 0.0, -math.sin(yaw_sensor)],
+                dtype=np.float32,
             )
             heading_ego = rotation @ heading_sensor
             yaw_ego = float(math.atan2(heading_ego[1], heading_ego[0]))
-
-        width = float(dims[0])
-        height = float(dims[1])
-        length = float(dims[2])
 
         converted.append(
             {
