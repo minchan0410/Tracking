@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>fcos3d_ros</name>
+  <version>0.1.0</version>
+  <description>FCOS3D monocular 3D detection ROS node for NuScenes bag playback</description>
+  <maintainer email="user@example.com">user</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>visualization_msgs</depend>
+
+  <export></export>
+</package>

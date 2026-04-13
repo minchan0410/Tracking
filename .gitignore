@@ -1,28 +1,13 @@
-# OS / Editor
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
+# NuScenes dataset & bag files
+nuscenes/
+nubag/
+*.bag
+*.tgz
 
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ipynb_checkpoints/
-*.egg-info/
-.venv/
-venv/
-env/
+# Python virtualenv
+yolo3d_env/
 
-# Logs
-*.log
-
-# Project-generated / large assets
-data/nuscenes/
-checkpoints/*.pth
-outputs/
-_tmp_mmcv/
-_tmp_mmcv_repo/
+# ROS build artifacts
+tracking_ws/build/
+tracking_ws/devel/
+tracking_ws/install/

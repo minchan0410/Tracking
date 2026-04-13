@@ -1,0 +1,9 @@
+<launch>
+  <!-- FCOS3D monocular 3D detection on cam_front/raw -->
+  <node pkg="fcos3d_ros"
+        type="fcos3d_node.py"
+        name="fcos3d_node"
+        output="screen"
+        launch-prefix="$(find fcos3d_ros)/env.sh">
+  </node>
+</launch>
